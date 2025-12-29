@@ -5,7 +5,7 @@ use cyw43::JoinOptions;
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{Either, select};
 use embassy_net::{Config, StackResources};
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Level, Output};
@@ -115,12 +115,13 @@ async fn main(spawner: Spawner) {
 
     // Main loop - update display periodically
     loop {
+        info!(
+            "Wait for key press or sleep timeout: {} minutes",
+            config::UPDATE_INTERVAL_MINUTES
+        );
         // Check for button presses with timeout
         let sleep_duration = Duration::from_secs(config::UPDATE_INTERVAL_MINUTES as u64 * 60);
-        let button_event = select(
-            wait_for_button_press(&keys),
-            Timer::after(sleep_duration)
-        ).await;
+        let button_event = select(wait_for_button_press(&keys), Timer::after(sleep_duration)).await;
 
         match button_event {
             Either::First(button) => {
