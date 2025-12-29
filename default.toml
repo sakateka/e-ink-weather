@@ -1,0 +1,15 @@
+# WiFi configuration
+[wifi]
+ssid = "YOUR_WIFI_SSID"
+password = "YOUR_WIFI_PASSWORD"
+
+# Image download configuration
+[image]
+url = "http://example.com/api/weather-image"
+update_interval_minutes = 5
+
+# e-Paper display configuration
+[epaper]
+width = 600
+height = 448
+spi_frequency = 4000000
