@@ -1,0 +1,143 @@
+[package]
+name = "pico-epaper"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "pico-epaper"
+path = "src/main.rs"
+test = false
+bench = false
+doctest = false
+
+[build-dependencies]
+config = "0.15"
+
+
+[dependencies]
+embassy-embedded-hal = { version = "0.5.0", features = ["defmt"] }
+embassy-sync = { version = "0.7.2", features = ["defmt"] }
+embassy-executor = { version = "0.9.0",  features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+embassy-time = { version = "0.5.0",  features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-rp = { version = "0.9.0",  features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
+embassy-usb = { version = "0.5.1",  features = ["defmt"] }
+embassy-net = { version = "0.7.1",  features = ["defmt", "icmp", "tcp", "udp", "raw", "dhcpv4", "medium-ethernet", "dns", "proto-ipv4", "proto-ipv6", "multicast"] }
+embassy-net-wiznet = { version = "0.2.1",  features = ["defmt"] }
+embassy-futures = { version = "0.1.2"  }
+embassy-usb-logger = { version = "0.5.1"  }
+cyw43 = { version = "0.6.0", features = ["defmt", "firmware-logs"] }
+cyw43-pio = { version = "0.9.0", features = ["defmt"] }
+
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+fixed = "1.23.1"
+fixed-macro = "1.2"
+
+# for web request example
+# reqwless = { git = "https://github.com/drogue-iot/reqwless", rev = "68f703dfc16e6f7f964b7238c922c0d433118872", features = ["defmt"] }
+# serde = { version = "1.0.203", default-features = false, features = ["derive"] }
+# serde-json-core = "0.5.1"
+
+# for assign resources example
+# assign-resources = { git = "https://github.com/adamgreig/assign-resources", rev = "bd22cb7a92031fb16f74a5da42469d466c33383e" }
+
+#cortex-m = { version = "0.7.6", features = ["critical-section-single-core"] }
+cortex-m = { version = "0.7.6", features = ["inline-asm"] }
+cortex-m-rt = "0.7.0"
+critical-section = "1.1"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+display-interface-spi = "0.5.0"
+embedded-graphics = "0.8.1"
+mipidsi = "0.8.0"
+display-interface = "0.5.0"
+byte-slice-cast = { version = "1.2.0", default-features = false }
+smart-leds = "0.4.0"
+heapless = "0.8"
+usbd-hid = "0.9.0"
+
+embedded-hal-1 = { package = "embedded-hal", version = "1.0" }
+embedded-hal-async = "1.0"
+embedded-hal-bus = { version = "0.1", features = ["async"] }
+embedded-io-async = { version = "0.7.0", features = ["defmt"] }
+embedded-storage = { version = "0.3" }
+static_cell = "2.1"
+portable-atomic = { version = "1.5", features = ["critical-section"] }
+log = "0.4"
+rand = { version = "0.9.0", default-features = false }
+embedded-sdmmc = "0.7.0"
+
+[profile.release]
+# Enable generation of debug symbols even on release builds
+debug = true
+
+[package.metadata.embassy]
+build = [
+  { target = "thumbv6m-none-eabi", artifact-dir = "out/examples/rp" }
+]
+
+# [dependencies]
+# # Embedded HAL traits
+# embassy-embedded-hal = { version = "0.5.0", features = ["defmt"]}
+# embedded-hal-async = "1.0"
+# embedded-io = "0.7.1"
+# embedded-io-async = "0.7.0"
+#
+# # Cortex-M
+# cortex-m = "0.7"
+# cortex-m-rt = "0.7"
+#
+# # Embassy for async/await
+# embassy-executor = { version = "0.9.0", features = ["arch-cortex-m", "executor-thread", "defmt"] }
+# embassy-time = { version = "0.5.0", features = ["defmt", "defmt-timestamp-uptime"] }
+# embassy-net = { version = "0.7.1", features = ["defmt", "tcp", "udp", "dhcpv4", "medium-ethernet"] }
+# embassy-sync = { version = "0.7.2", features = ["defmt"] }
+# embassy-rp = { version = "0.9.0", features = ["defmt", "time-driver", "critical-section-impl", "rp2040"] }
+#
+# # WiFi for Pico W
+# cyw43 = { version = "0.6.0", features = ["defmt", "firmware-logs"] }
+# cyw43-pio = { version = "0.9.0", features = ["defmt"] }
+#
+# # For delays
+# fugit = "0.3"
+#
+# # For panic handler
+# panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+#
+# # For logging
+# defmt = "1.0.1"
+# defmt-rtt = "1.0.0"
+#
+# # For memory
+# critical-section = "1.2"
+#
+# # Ensure atomics work on Cortex-M0+ without CAS
+# portable-atomic = { version = "1", features = ["critical-section"] }
+#
+# # Utilities
+# static_cell = "2.1"
+# heapless = "0.8"
+#
+# [profile.release]
+# codegen-units = 1
+# debug = 2
+# debug-assertions = false
+# incremental = false
+# lto = 'fat'
+# opt-level = 's'
+# overflow-checks = false
+#
+# # do not optimize proc-macro crates = faster builds from scratch
+# [profile.dev.build-override]
+# codegen-units = 8
+# debug = false
+# debug-assertions = false
+# opt-level = 0
+# overflow-checks = false
+#
+# [profile.release.build-override]
+# codegen-units = 8
+# debug = false
+# debug-assertions = false
+# opt-level = 0
+# overflow-checks = false
+

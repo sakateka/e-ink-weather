@@ -1,0 +1,17 @@
+# WiFi configuration
+[wifi]
+ssid = "YOUR_WIFI_SSID"
+password = "YOUR_WIFI_PASSWORD"
+
+# Image download configuration
+[image]
+server_ip = "192.168.1.100"
+server_port = 80
+api_path = "/api/weather-image"
+update_interval_minutes = 5
+
+# e-Paper display configuration
+[epaper]
+width = 600
+height = 448
+spi_frequency = 4000000
