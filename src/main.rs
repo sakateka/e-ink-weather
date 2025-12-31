@@ -5,7 +5,7 @@ use cyw43::JoinOptions;
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_net::{Config, StackResources};
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Level, Output};
@@ -49,7 +49,7 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // Init GPIOs for e-paper display (bit-banged SPI pins and keys)
-    let (epd_pins, keys) = config::init_all(p);
+    let (epd_pins, mut keys) = config::init_all(p);
 
     // Init e-paper driver once
     let mut epd = Epd5in65f::new(epd_pins);
@@ -121,7 +121,7 @@ async fn main(spawner: Spawner) {
         );
         // Check for button presses with timeout
         let sleep_duration = Duration::from_secs(config::UPDATE_INTERVAL_MINUTES as u64 * 60);
-        let button_event = select(wait_for_button_press(&keys), Timer::after(sleep_duration)).await;
+        let button_event = select(wait_for_button_press(&mut keys), Timer::after(sleep_duration)).await;
 
         match button_event {
             Either::First(button) => {
@@ -216,50 +216,46 @@ async fn main(spawner: Spawner) {
     }
 }
 
-/// Wait for any button press and return button number (0, 1, or 2)
-async fn wait_for_button_press(keys: &Keys<'_>) -> u8 {
+/// Wait for any button press using GPIO interrupts (efficient, no polling).
+/// Returns button number (0, 1, or 2).
+/// Buttons are active-low with pull-up resistors.
+async fn wait_for_button_press(keys: &mut Keys<'_>) -> u8 {
     loop {
-        // Check KEY0 (active low with pull-up)
-        if keys.key0.is_low() {
-            // Debounce
-            Timer::after(Duration::from_millis(50)).await;
-            if keys.key0.is_low() {
-                // Wait for release
-                while keys.key0.is_low() {
-                    Timer::after(Duration::from_millis(10)).await;
+        // Wait for any button to be pressed (falling edge = button pressed)
+        // This uses GPIO interrupts - CPU can sleep until interrupt occurs
+        let button = select3(
+            keys.key0.wait_for_falling_edge(),
+            keys.key1.wait_for_falling_edge(),
+            keys.key2.wait_for_falling_edge(),
+        )
+        .await;
+
+        // Debounce delay
+        Timer::after(Duration::from_millis(50)).await;
+
+        // Verify button is still pressed and wait for release
+        match button {
+            Either3::First(_) => {
+                if keys.key0.is_low() {
+                    // Wait for button release (rising edge)
+                    keys.key0.wait_for_rising_edge().await;
+                    return 0;
                 }
-                return 0;
+            }
+            Either3::Second(_) => {
+                if keys.key1.is_low() {
+                    keys.key1.wait_for_rising_edge().await;
+                    return 1;
+                }
+            }
+            Either3::Third(_) => {
+                if keys.key2.is_low() {
+                    keys.key2.wait_for_rising_edge().await;
+                    return 2;
+                }
             }
         }
-
-        // Check KEY1 (active low with pull-up)
-        if keys.key1.is_low() {
-            // Debounce
-            Timer::after(Duration::from_millis(50)).await;
-            if keys.key1.is_low() {
-                // Wait for release
-                while keys.key1.is_low() {
-                    Timer::after(Duration::from_millis(10)).await;
-                }
-                return 1;
-            }
-        }
-
-        // Check KEY2 (active low with pull-up)
-        if keys.key2.is_low() {
-            // Debounce
-            Timer::after(Duration::from_millis(50)).await;
-            if keys.key2.is_low() {
-                // Wait for release
-                while keys.key2.is_low() {
-                    Timer::after(Duration::from_millis(10)).await;
-                }
-                return 2;
-            }
-        }
-
-        // Small delay to avoid busy-waiting
-        Timer::after(Duration::from_millis(100)).await;
+        // If debounce failed, loop and wait for next press
     }
 }
 
