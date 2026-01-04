@@ -114,14 +114,20 @@ async fn main(spawner: Spawner) {
     }
 
     // Main loop - update display periodically
+    let mut next_update_delay_secs: u64 = config::UPDATE_INTERVAL_MINUTES as u64 * 60;
+
     loop {
         info!(
-            "Wait for key press or sleep timeout: {} minutes",
-            config::UPDATE_INTERVAL_MINUTES
+            "Wait for key press or sleep timeout: {} seconds",
+            next_update_delay_secs
         );
         // Check for button presses with timeout
-        let sleep_duration = Duration::from_secs(config::UPDATE_INTERVAL_MINUTES as u64 * 60);
-        let button_event = select(wait_for_button_press(&mut keys), Timer::after(sleep_duration)).await;
+        let sleep_duration = Duration::from_secs(next_update_delay_secs);
+        let button_event = select(
+            wait_for_button_press(&mut keys),
+            Timer::after(sleep_duration),
+        )
+        .await;
 
         match button_event {
             Either::First(button) => {
@@ -179,7 +185,20 @@ async fn main(spawner: Spawner) {
         // SAFETY: We're in single-threaded executor, no concurrent access to IMAGE_BUFFER
         let image_buffer = unsafe { &mut *core::ptr::addr_of_mut!(IMAGE_BUFFER) };
         match download_image(&stack, image_buffer).await {
-            Ok(image_data) => {
+            Ok((image_data, server_delay)) => {
+                // Update next delay based on server response
+                if let Some(delay) = server_delay {
+                    next_update_delay_secs = delay;
+                    info!("Next update will be in {} seconds (from server)", delay);
+                } else {
+                    // Fallback to default interval if server doesn't provide delay
+                    next_update_delay_secs = config::UPDATE_INTERVAL_MINUTES as u64 * 60;
+                    info!(
+                        "Next update will be in {} seconds (default)",
+                        next_update_delay_secs
+                    );
+                }
+
                 // Validate image size before displaying
                 if image_data.len() != IMAGE_BUFFER_SIZE {
                     error!(
@@ -201,6 +220,7 @@ async fn main(spawner: Spawner) {
             }
             Err(e) => {
                 error!("Download failed: {}", e);
+                // Keep the current delay on error
             }
         }
 

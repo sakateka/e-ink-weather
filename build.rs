@@ -44,9 +44,7 @@ fn main() {
         .expect("Missing wifi.password");
 
     // Extract image download settings
-    let image_url = settings
-        .get_string("image.url")
-        .expect("Missing image.url");
+    let image_url = settings.get_string("image.url").expect("Missing image.url");
     let update_interval_minutes = settings
         .get::<u32>("image.update_interval_minutes")
         .expect("Missing image.update_interval_minutes");

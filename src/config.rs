@@ -48,7 +48,14 @@ pub fn init_all(p: embassy_rp::Peripherals) -> (EpdPins<'static>, Keys<'static>)
     let clk = Output::new(p.PIN_10, Level::Low);
     let mosi = Output::new(p.PIN_11, Level::Low);
 
-    let epd_pins = EpdPins { rst, dc, cs, busy, clk, mosi };
+    let epd_pins = EpdPins {
+        rst,
+        dc,
+        cs,
+        busy,
+        clk,
+        mosi,
+    };
 
     // Keys
     let key0 = Input::new(p.PIN_15, Pull::Up);
