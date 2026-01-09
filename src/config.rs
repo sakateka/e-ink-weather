@@ -5,7 +5,11 @@
 
 include!(concat!(env!("OUT_DIR"), "/config_generated.rs"));
 
-use embassy_rp::gpio::{Input, Level, Output, Pull};
+use embassy_rp::{
+    Peri,
+    gpio::{Input, Level, Output, Pull},
+    peripherals,
+};
 
 /// Pins for e-Paper display (bit-banged SPI).
 ///
@@ -37,16 +41,26 @@ pub struct Keys<'d> {
 
 /// Initialize all components (consumes Peripherals).
 /// Returns bit-banged SPI GPIOs for the e-Paper and the three keys.
-pub fn init_all(p: embassy_rp::Peripherals) -> (EpdPins<'static>, Keys<'static>) {
+pub fn init_all(
+    pin_12: Peri<'static, peripherals::PIN_12>,
+    pin_8: Peri<'static, peripherals::PIN_8>,
+    pin_9: Peri<'static, peripherals::PIN_9>,
+    pin_13: Peri<'static, peripherals::PIN_13>,
+    pin_10: Peri<'static, peripherals::PIN_10>,
+    pin_11: Peri<'static, peripherals::PIN_11>,
+    pin_15: Peri<'static, peripherals::PIN_15>,
+    pin_17: Peri<'static, peripherals::PIN_17>,
+    pin_2: Peri<'static, peripherals::PIN_2>,
+) -> (EpdPins<'static>, Keys<'static>) {
     // e-Paper control pins
-    let rst = Output::new(p.PIN_12, Level::High);
-    let dc = Output::new(p.PIN_8, Level::High);
-    let cs = Output::new(p.PIN_9, Level::High);
-    let busy = Input::new(p.PIN_13, Pull::None);
+    let rst = Output::new(pin_12, Level::High);
+    let dc = Output::new(pin_8, Level::High);
+    let cs = Output::new(pin_9, Level::High);
+    let busy = Input::new(pin_13, Pull::None);
 
     // Bit-banged SPI lines
-    let clk = Output::new(p.PIN_10, Level::Low);
-    let mosi = Output::new(p.PIN_11, Level::Low);
+    let clk = Output::new(pin_10, Level::Low);
+    let mosi = Output::new(pin_11, Level::Low);
 
     let epd_pins = EpdPins {
         rst,
@@ -58,9 +72,9 @@ pub fn init_all(p: embassy_rp::Peripherals) -> (EpdPins<'static>, Keys<'static>)
     };
 
     // Keys
-    let key0 = Input::new(p.PIN_15, Pull::Up);
-    let key1 = Input::new(p.PIN_17, Pull::Up);
-    let key2 = Input::new(p.PIN_2, Pull::Up);
+    let key0 = Input::new(pin_15, Pull::Up);
+    let key1 = Input::new(pin_17, Pull::Up);
+    let key2 = Input::new(pin_2, Pull::Up);
     let keys = Keys { key0, key1, key2 };
 
     (epd_pins, keys)

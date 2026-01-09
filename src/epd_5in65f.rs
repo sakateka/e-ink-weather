@@ -10,7 +10,7 @@ pub const EPD_5IN65F_WIDTH: u16 = 600;
 pub const EPD_5IN65F_HEIGHT: u16 = 448;
 
 /// Colors: 3-bit indices matching lib/epd_5in65f.h
-// pub const EPD_5IN65F_BLACK: u8 = 0x0;
+pub const EPD_5IN65F_BLACK: u8 = 0x0;
 pub const EPD_5IN65F_WHITE: u8 = 0x1;
 /*
 pub const EPD_5IN65F_GREEN: u8 = 0x2;
@@ -292,4 +292,91 @@ impl<'d> Epd5in65f<'d> {
         Timer::after(Duration::from_millis(100)).await;
         self.pins.rst.set_low(); // Reset
     }
+}
+
+/// Simple 5x7 bitmap font for digits 0-9
+/// Each digit is 5 bytes (5 columns), each byte represents 7 pixels (bits 0-6)
+const FONT_5X7: [[u8; 5]; 10] = [
+    [0b0111110, 0b1000001, 0b1000001, 0b1000001, 0b0111110], // 0
+    [0b0000000, 0b0100001, 0b1111111, 0b0000001, 0b0000000], // 1
+    [0b0100011, 0b1000101, 0b1001001, 0b1010001, 0b0100001], // 2
+    [0b0100010, 0b1000001, 0b1001001, 0b1001001, 0b0110110], // 3
+    [0b0001100, 0b0010100, 0b0100100, 0b1111111, 0b0000100], // 4
+    [0b1110010, 0b1010001, 0b1010001, 0b1010001, 0b1001110], // 5
+    [0b0111110, 0b1001001, 0b1001001, 0b1001001, 0b0000110], // 6
+    [0b1000000, 0b1000111, 0b1001000, 0b1010000, 0b1100000], // 7
+    [0b0110110, 0b1001001, 0b1001001, 0b1001001, 0b0110110], // 8
+    [0b0110000, 0b1001001, 0b1001001, 0b1001001, 0b0111110], // 9
+];
+
+/// Draw a single digit at position (x, y) in the image buffer
+/// Scale factor determines the size (1 = 5x7, 2 = 10x14, etc.)
+fn draw_digit(image: &mut [u8], x: u16, y: u16, digit: u8, color: u8, scale: u16) {
+    if digit > 9 {
+        return;
+    }
+
+    let glyph = &FONT_5X7[digit as usize];
+    let width_half = EPD_5IN65F_WIDTH / 2;
+
+    for col in 0..5 {
+        let column_data = glyph[col];
+        for row in 0..7 {
+            if (column_data & (1 << (6 - row))) != 0 {
+                // Draw scaled pixel
+                for sy in 0..scale {
+                    for sx in 0..scale {
+                        let px = x + (col as u16 * scale) + sx;
+                        let py = y + (row as u16 * scale) + sy;
+
+                        if px < EPD_5IN65F_WIDTH && py < EPD_5IN65F_HEIGHT {
+                            set_pixel(image, px, py, color, width_half);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Set a single pixel in the image buffer
+/// Image format: 4bpp packed (two pixels per byte), row-major
+fn set_pixel(image: &mut [u8], x: u16, y: u16, color: u8, width_half: u16) {
+    let byte_index = (x / 2 + width_half * y) as usize;
+
+    if byte_index < image.len() {
+        if x.is_multiple_of(2) {
+            // High nibble (left pixel)
+            image[byte_index] = (image[byte_index] & 0x0F) | ((color & 0x0F) << 4);
+        } else {
+            // Low nibble (right pixel)
+            image[byte_index] = (image[byte_index] & 0xF0) | (color & 0x0F);
+        }
+    }
+}
+
+/// Draw a number (up to 3 digits) at position (x, y)
+/// Returns the width of the drawn text in pixels
+pub fn draw_number(image: &mut [u8], x: u16, y: u16, number: u8, color: u8, scale: u16) -> u16 {
+    let mut current_x = x;
+    let char_width = 5 * scale;
+    let char_spacing = 2 * scale;
+
+    if number >= 100 {
+        let hundreds = number / 100;
+        draw_digit(image, current_x, y, hundreds, color, scale);
+        current_x += char_width + char_spacing;
+    }
+
+    if number >= 10 {
+        let tens = (number / 10) % 10;
+        draw_digit(image, current_x, y, tens, color, scale);
+        current_x += char_width + char_spacing;
+    }
+
+    let ones = number % 10;
+    draw_digit(image, current_x, y, ones, color, scale);
+    current_x += char_width;
+
+    current_x - x
 }

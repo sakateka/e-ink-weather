@@ -21,7 +21,7 @@ pub const IMAGE_BUFFER_SIZE: usize = 134_400;
 pub async fn download_image<'a>(
     stack: &Stack<'_>,
     image_buffer: &'a mut [u8],
-) -> Result<(&'a [u8], Option<u64>), &'static str> {
+) -> Result<(&'a mut [u8], Option<u64>), &'static str> {
     if image_buffer.len() < IMAGE_BUFFER_SIZE {
         return Err("Buffer too small");
     }
