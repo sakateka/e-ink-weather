@@ -123,15 +123,17 @@ async fn measure_battery_percentage(
         battery_voltage, median_adc, adc_voltage
     );
 
+    let min_voltage = 2.5;
+    let full_voltage = 4.2;
     // Convert voltage to percentage
     // LiPo battery: ~4.2V (100%) to ~3.0V (0%)
     // Using linear approximation
-    let percentage = if battery_voltage >= 4.2 {
+    let percentage = if battery_voltage >= full_voltage {
         100.0
-    } else if battery_voltage <= 3.0 {
+    } else if battery_voltage <= min_voltage {
         0.0
     } else {
-        ((battery_voltage - 3.0) / (4.2 - 3.0)) * 100.0
+        ((battery_voltage - min_voltage) / (full_voltage - min_voltage)) * 100.0
     };
 
     percentage.clamp(0.0, 100.0) as u8
