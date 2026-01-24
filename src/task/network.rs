@@ -9,7 +9,7 @@ use embassy_net::{Config, StackResources};
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{DMA_CH0, PIN_23, PIN_24, PIN_25, PIN_29, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex, signal::Signal};
 use embassy_time::{Duration, Instant, Timer};
 use static_cell::StaticCell;
 
@@ -22,6 +22,15 @@ static NETWORK_UPDATE_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new(
 
 /// Signal for triggering LED blink
 static LED_BLINK_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Shared CYW43 control for LED blinking - will be initialized once
+static CYW43_CONTROL: StaticCell<Mutex<CriticalSectionRawMutex, cyw43::Control<'static>>> =
+    StaticCell::new();
+
+/// Reference to the initialized control mutex (set after initialization)
+static mut CYW43_CONTROL_REF: Option<
+    &'static Mutex<CriticalSectionRawMutex, cyw43::Control<'static>>,
+> = None;
 
 /// Signals the network task to start update
 pub fn signal_network_update() {
@@ -104,6 +113,10 @@ pub async fn network_manager(
 
     info!("Initializing CYW43 with CLM data...");
     control.init(clm).await;
+
+    control.gpio_set(0, true).await;
+    info!("Initial LED turned ON");
+
     info!("Setting power management mode...");
     control
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
@@ -118,59 +131,72 @@ pub async fn network_manager(
     let seed = Instant::now().as_micros();
     info!("Network stack seed: {}", seed);
 
+    // Configure DHCP with hostname
+    let mut dhcp_config = embassy_net::DhcpConfig::default();
+    let s: heapless::String<32> = heapless::String::try_from("weather").unwrap();
+    dhcp_config.hostname = Some(s);
+
     let (stack, runner) = embassy_net::new(
         net_device,
-        Config::dhcpv4(Default::default()),
+        Config::dhcpv4(dhcp_config),
         RESOURCES.init(StackResources::new()),
         seed,
     );
 
+    info!("Network hostname set to: weather");
+
     info!("Spawning network stack runner task...");
     spawner.spawn(net_task(runner)).unwrap();
+
+    // Store control in static mutex for sharing
+    let control_mutex = CYW43_CONTROL.init(Mutex::new(control));
+
+    // Save reference for other tasks
+    unsafe {
+        CYW43_CONTROL_REF = Some(control_mutex);
+    }
+
+    // Spawn LED blink task
+    info!("Spawning LED blink task...");
+    spawner.spawn(led_blink_task()).unwrap();
+
+    // Track if initial LED is still on
+    let mut initial_led_on = true;
 
     // Main network loop - wait for signals from orchestrator
     info!("Network manager ready, waiting for signals...");
     loop {
-        // Wait for either network update or LED blink signal
-        let is_led_blink = match embassy_futures::select::select(
-            async {
-                NETWORK_UPDATE_SIGNAL.wait().await;
-                false
-            },
-            async {
-                LED_BLINK_SIGNAL.wait().await;
-                true
-            },
-        )
-        .await
-        {
-            embassy_futures::select::Either::First(val) => val,
-            embassy_futures::select::Either::Second(val) => val,
-        };
-
-        if is_led_blink {
-            info!("LED blink signal received");
-            blink_led(&mut control).await;
-            continue;
-        }
+        // Wait for network update signal
+        NETWORK_UPDATE_SIGNAL.wait().await;
 
         info!("Network update signal received, connecting to WiFi...");
-        // Set performance mode for connection
-        control
-            .set_power_management(cyw43::PowerManagementMode::Performance)
-            .await;
 
-        // Connect to WiFi
-        info!("Joining WiFi network: {}", crate::network::WIFI_SSID);
-        while let Err(err) = control
-            .join(
-                crate::network::WIFI_SSID,
-                JoinOptions::new(crate::network::WIFI_PASSWORD.as_bytes()),
-            )
-            .await
         {
-            warn!("WiFi join failed: {:?}, retrying...", err.status);
-            Timer::after(Duration::from_secs(1)).await;
+            // Connect to WiFi
+            info!("Joining WiFi network: {}", crate::network::WIFI_SSID);
+            loop {
+                let mut control = control_mutex.lock().await;
+
+                // Set performance mode for connection
+                control
+                    .set_power_management(cyw43::PowerManagementMode::Performance)
+                    .await;
+
+                if let Err(err) = control
+                    .join(
+                        crate::network::WIFI_SSID,
+                        JoinOptions::new(crate::network::WIFI_PASSWORD.as_bytes()),
+                    )
+                    .await
+                {
+                    warn!("WiFi join failed: {:?}, retrying...", err.status);
+                    // Release control lock
+                    drop(control);
+                    Timer::after(Duration::from_secs(1)).await;
+                } else {
+                    break;
+                }
+            }
         }
 
         info!("WiFi connected, waiting for link...");
@@ -190,11 +216,6 @@ pub async fn network_manager(
             state.wifi_connected = true;
         }
         send_event(Event::NetworkConnected).await;
-
-        // Set WiFi to PowerSave mode
-        control
-            .set_power_management(cyw43::PowerManagementMode::PowerSave)
-            .await;
 
         // Download image
         info!("Downloading image...");
@@ -245,9 +266,24 @@ pub async fn network_manager(
             }
         }
 
-        // Disconnect from WiFi properly
-        info!("Disconnecting from WiFi...");
-        disconnect_wifi(&mut control, &stack).await;
+        {
+            // Set WiFi to PowerSave mode
+            let mut control = control_mutex.lock().await;
+            control
+                .set_power_management(cyw43::PowerManagementMode::PowerSave)
+                .await;
+
+            // Disconnect from WiFi properly
+            info!("Disconnecting from WiFi...");
+            disconnect_wifi(&mut control, &stack).await;
+
+            // Turn off initial LED if it's still on
+            if initial_led_on {
+                control.gpio_set(0, false).await;
+                info!("Initial LED turned OFF");
+                initial_led_on = false;
+            }
+        }
 
         // Update state
         {
@@ -284,14 +320,33 @@ async fn disconnect_wifi(control: &mut cyw43::Control<'static>, stack: &embassy_
         .await;
 }
 
-/// Blink the onboard LED (controlled via CYW43)
-async fn blink_led(control: &mut cyw43::Control<'_>) {
-    info!("Blinking LED 5 times");
-    for _ in 0..5 {
-        control.gpio_set(0, true).await;
-        Timer::after(Duration::from_millis(200)).await;
-        control.gpio_set(0, false).await;
-        Timer::after(Duration::from_millis(200)).await;
+/// LED blink task - handles LED blinking on demand (e.g., KEY2 press)
+#[embassy_executor::task]
+pub async fn led_blink_task() -> ! {
+    info!("LED blink task started");
+
+    loop {
+        // Wait for LED blink signal
+        LED_BLINK_SIGNAL.wait().await;
+        info!("LED blink signal received");
+
+        // Get control mutex reference
+        let control_mutex = unsafe { CYW43_CONTROL_REF };
+
+        if control_mutex.is_none() {
+            warn!("CYW43_CONTROL not initialized yet, skipping LED blink");
+            continue;
+        }
+
+        let control_mutex = control_mutex.unwrap();
+        let mut control = control_mutex.lock().await;
+
+        for _ in 0..5 {
+            control.gpio_set(0, true).await;
+            Timer::after(Duration::from_millis(200)).await;
+            control.gpio_set(0, false).await;
+            Timer::after(Duration::from_millis(200)).await;
+        }
+        info!("LED blink complete");
     }
-    info!("LED blink complete");
 }

@@ -1623,7 +1623,7 @@ dependencies = [
  "embedded-hal-async",
  "embedded-storage",
  "fixed",
- "heapless 0.9.2",
+ "heapless 0.8.0",
  "panic-probe",
  "portable-atomic",
  "reqwless",
