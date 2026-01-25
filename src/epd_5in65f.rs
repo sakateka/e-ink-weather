@@ -212,6 +212,7 @@ impl<'d> Epd5in65f<'d> {
     }
 
     /// Display image buffer, 4bpp packed (two pixels per byte), row-major
+    /// Image is rotated 180 degrees for proper orientation
     pub async fn display(&mut self, image: &[u8]) {
         self.send_command(0x61); // Set Resolution
         self.send_data(0x02);
@@ -222,11 +223,14 @@ impl<'d> Epd5in65f<'d> {
         self.send_command(0x10);
 
         let width_half = EPD_5IN65F_WIDTH / 2;
-        for i in 0..EPD_5IN65F_HEIGHT as usize {
-            for j in 0..width_half as usize {
+        // Send data in reverse order for 180° rotation
+        for i in (0..EPD_5IN65F_HEIGHT as usize).rev() {
+            for j in (0..width_half as usize).rev() {
                 let idx = j + (width_half as usize * i);
                 let b = image.get(idx).copied().unwrap_or(0x11);
-                self.send_data(b);
+                // Swap nibbles within the byte to maintain proper pixel order
+                let b_rotated = ((b & 0x0F) << 4) | ((b & 0xF0) >> 4);
+                self.send_data(b_rotated);
             }
         }
 
