@@ -12,10 +12,10 @@ pub const EPD_5IN65F_HEIGHT: u16 = 448;
 /// Colors: 3-bit indices matching lib/epd_5in65f.h
 pub const EPD_5IN65F_BLACK: u8 = 0x0;
 pub const EPD_5IN65F_WHITE: u8 = 0x1;
+pub const EPD_5IN65F_RED: u8 = 0x4;
 /*
 pub const EPD_5IN65F_GREEN: u8 = 0x2;
 pub const EPD_5IN65F_BLUE: u8 = 0x3;
-pub const EPD_5IN65F_RED: u8 = 0x4;
 pub const EPD_5IN65F_YELLOW: u8 = 0x5;
 pub const EPD_5IN65F_ORANGE: u8 = 0x6;
 pub const EPD_5IN65F_CLEAN: u8 = 0x7;
@@ -321,7 +321,6 @@ fn draw_digit(image: &mut [u8], x: u16, y: u16, digit: u8, color: u8, scale: u16
     }
 
     let glyph = &FONT_5X7[digit as usize];
-    let width_half = EPD_5IN65F_WIDTH / 2;
 
     for col in 0..5 {
         let column_data = glyph[col];
@@ -334,7 +333,7 @@ fn draw_digit(image: &mut [u8], x: u16, y: u16, digit: u8, color: u8, scale: u16
                         let py = y + (row as u16 * scale) + sy;
 
                         if px < EPD_5IN65F_WIDTH && py < EPD_5IN65F_HEIGHT {
-                            set_pixel(image, px, py, color, width_half);
+                            set_pixel(image, px, py, color);
                         }
                     }
                 }
@@ -343,10 +342,17 @@ fn draw_digit(image: &mut [u8], x: u16, y: u16, digit: u8, color: u8, scale: u16
     }
 }
 
-/// Set a single pixel in the image buffer
-/// Image format: 4bpp packed (two pixels per byte), row-major
-fn set_pixel(image: &mut [u8], x: u16, y: u16, color: u8, width_half: u16) {
-    let byte_index = (x / 2 + width_half * y) as usize;
+/// Set a single pixel in the image buffer.
+/// Image format: 4bpp packed (two pixels per byte), row-major.
+fn set_pixel(image: &mut [u8], x: u16, y: u16, color: u8) {
+    if x >= EPD_5IN65F_WIDTH || y >= EPD_5IN65F_HEIGHT {
+        return;
+    }
+
+    // IMPORTANT: compute in usize to avoid u16 overflow on row offset.
+    // 300 * 447 = 134100, which overflows u16 and causes wrapped writes.
+    let width_half = (EPD_5IN65F_WIDTH / 2) as usize;
+    let byte_index = (x as usize / 2) + (width_half * y as usize);
 
     if byte_index < image.len() {
         if x.is_multiple_of(2) {
@@ -383,4 +389,66 @@ pub fn draw_number(image: &mut [u8], x: u16, y: u16, number: u8, color: u8, scal
     current_x += char_width;
 
     current_x - x
+}
+
+/// Draw low-battery warning in the bottom-right quarter of the screen.
+pub fn draw_low_battery_warning(image: &mut [u8]) {
+    let overlay_width = 336;
+    let overlay_height = 180;
+    let overlay_x = EPD_5IN65F_WIDTH - overlay_width - 25;
+    let overlay_y = EPD_5IN65F_HEIGHT - overlay_height - 14;
+
+    let icon_w = 284;
+    let icon_h = 142;
+    let cap_w = 26;
+    let icon_x = overlay_x;
+    let icon_y = overlay_y;
+    let border = 10;
+    let background_padding = 10;
+
+    // Clear destination area with padding so the icon has whitespace around it.
+    fill_rect(
+        image,
+        icon_x.saturating_sub(background_padding),
+        icon_y.saturating_sub(background_padding),
+        icon_w + cap_w + (background_padding * 2),
+        icon_h + (background_padding * 2),
+        EPD_5IN65F_WHITE,
+    );
+
+    // Battery body border.
+    fill_rect(image, icon_x, icon_y, icon_w, icon_h, EPD_5IN65F_BLACK);
+    fill_rect(
+        image,
+        icon_x + border,
+        icon_y + border,
+        icon_w - (border * 2),
+        icon_h - (border * 2),
+        EPD_5IN65F_WHITE,
+    );
+
+    // Battery cap on the right side (horizontal battery orientation).
+    fill_rect(image, icon_x + icon_w, icon_y + 42, cap_w, 58, EPD_5IN65F_BLACK);
+    fill_rect(image, icon_x + icon_w + 6, icon_y + 48, 14, 46, EPD_5IN65F_WHITE);
+
+    // "Almost empty" red segment at the left side.
+    fill_rect(
+        image,
+        icon_x + border + 20,
+        icon_y + border + 20,
+        38,
+        icon_h - (border * 2) - 40,
+        EPD_5IN65F_RED,
+    );
+}
+
+fn fill_rect(image: &mut [u8], x: u16, y: u16, width: u16, height: u16, color: u8) {
+    let x_end = x.saturating_add(width).min(EPD_5IN65F_WIDTH);
+    let y_end = y.saturating_add(height).min(EPD_5IN65F_HEIGHT);
+
+    for py in y..y_end {
+        for px in x..x_end {
+            set_pixel(image, px, py, color);
+        }
+    }
 }

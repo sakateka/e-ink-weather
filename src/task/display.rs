@@ -5,7 +5,9 @@ use defmt::{error, info};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 
 use crate::config::EpdPins;
-use crate::epd_5in65f::{EPD_5IN65F_BLACK, EPD_5IN65F_WHITE, Epd5in65f, draw_number};
+use crate::epd_5in65f::{
+    EPD_5IN65F_BLACK, EPD_5IN65F_WHITE, Epd5in65f, draw_low_battery_warning, draw_number,
+};
 use crate::network::IMAGE_BUFFER_SIZE;
 use crate::state::get_state;
 
@@ -50,9 +52,16 @@ pub async fn display_handler(
             continue;
         }
 
-        // Draw battery percentage in top-left corner
-        info!("Drawing battery percentage: {}%", battery_percent);
-        draw_number(image_buffer, 0, 0, battery_percent, EPD_5IN65F_BLACK, 2);
+        if battery_percent < 30 {
+            // Replace weather icon area with large low-battery warning.
+            info!("Battery low ({}%), drawing warning icon", battery_percent);
+            draw_low_battery_warning(image_buffer);
+            draw_number(image_buffer, 0, 0, battery_percent, EPD_5IN65F_BLACK, 3);
+        } else {
+            // Draw small battery percentage in top-left corner.
+            info!("Drawing battery percentage: {}%", battery_percent);
+            draw_number(image_buffer, 0, 0, battery_percent, EPD_5IN65F_BLACK, 3);
+        }
 
         // Initialize display
         info!("EPD init");
