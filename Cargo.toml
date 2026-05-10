@@ -43,5 +43,14 @@ static_cell = "2.1"
 portable-atomic = { version = "1.13.1", features = ["critical-section"] }
 
 [profile.release]
-# Enable generation of debug symbols even on release builds
+# Keep symbols for probe-rs/defmt backtraces in release firmware.
 debug = true
+# Better runtime performance and usually smaller firmware.
+lto = "fat"
+codegen-units = 1
+# For Cortex-M binaries this often reduces flash size.
+opt-level = "s"
+
+[profile.dev]
+# Slight optimization in dev helps timing-sensitive embedded code.
+opt-level = 1
