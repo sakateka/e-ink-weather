@@ -38,8 +38,11 @@ bind_interrupts!(struct Irqs {
 /// Helper function to spawn tasks and unwrap, panicking if spawn fails.
 /// This is acceptable during initialization as we want to fail fast if we can't spawn a task.
 #[allow(clippy::unwrap_used)]
-fn spawn_unwrap<S>(spawner: &Spawner, token: embassy_executor::SpawnToken<S>) {
-    spawner.spawn(token).unwrap();
+fn spawn_unwrap<S>(
+    spawner: &Spawner,
+    token: Result<embassy_executor::SpawnToken<S>, embassy_executor::SpawnError>,
+) {
+    spawner.spawn(token.unwrap());
 }
 
 #[embassy_executor::main]

@@ -6,6 +6,7 @@ use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::{error, info, warn};
 use embassy_executor::Spawner;
 use embassy_net::{Config, StackResources};
+use embassy_rp::dma::{Channel, InterruptHandler as DmaInterruptHandler};
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{DMA_CH0, PIN_23, PIN_24, PIN_25, PIN_29, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
@@ -56,7 +57,7 @@ pub struct WifiPeripherals {
 /// CYW43 runner task
 #[embassy_executor::task]
 async fn cyw43_task(
-    runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
+    runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>>,
 ) -> ! {
     runner.run().await
 }
@@ -79,8 +80,15 @@ pub async fn network_manager(
 
     // Load CYW43 firmware
     info!("Loading CYW43 firmware...");
-    let fw = include_bytes!("../../cyw43-firmware/43439A0.bin");
-    let clm = include_bytes!("../../cyw43-firmware/43439A0_clm.bin");
+    const FW_LEN: usize = include_bytes!("../../cyw43-firmware/43439A0.bin").len();
+    const CLM_LEN: usize = include_bytes!("../../cyw43-firmware/43439A0_clm.bin").len();
+    const NVRAM_LEN: usize = include_bytes!("../../cyw43-firmware/nvram_rp2040.bin").len();
+    static FW: cyw43::Aligned<cyw43::A4, [u8; FW_LEN]> =
+        cyw43::Aligned(*include_bytes!("../../cyw43-firmware/43439A0.bin"));
+    static CLM: cyw43::Aligned<cyw43::A4, [u8; CLM_LEN]> =
+        cyw43::Aligned(*include_bytes!("../../cyw43-firmware/43439A0_clm.bin"));
+    static NVRAM: cyw43::Aligned<cyw43::A4, [u8; NVRAM_LEN]> =
+        cyw43::Aligned(*include_bytes!("../../cyw43-firmware/nvram_rp2040.bin"));
 
     // Setup PIO for CYW43 SPI
     info!("Setting up PIO for CYW43 SPI...");
@@ -90,9 +98,11 @@ pub async fn network_manager(
     // Bind interrupts for PIO
     embassy_rp::bind_interrupts!(struct Irqs {
         PIO0_IRQ_0 => InterruptHandler<PIO0>;
+        DMA_IRQ_0 => DmaInterruptHandler<DMA_CH0>;
     });
 
     let mut pio = Pio::new(peripherals.pio, Irqs);
+    let dma = Channel::new(peripherals.dma_ch, Irqs);
     let spi = PioSpi::new(
         &mut pio.common,
         pio.sm0,
@@ -101,19 +111,20 @@ pub async fn network_manager(
         cs,
         peripherals.dio_pin,
         peripherals.clk_pin,
-        peripherals.dma_ch,
+        dma,
     );
 
     info!("Initializing CYW43 driver...");
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
-    let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
+    let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, &FW, &NVRAM).await;
 
     info!("Spawning CYW43 runner task...");
-    spawner.spawn(cyw43_task(runner)).unwrap();
+    #[allow(clippy::unwrap_used)]
+    spawner.spawn(cyw43_task(runner).unwrap());
 
     info!("Initializing CYW43 with CLM data...");
-    control.init(clm).await;
+    control.init(&CLM[..]).await;
 
     control.gpio_set(0, true).await;
     info!("Initial LED turned ON");
@@ -147,7 +158,8 @@ pub async fn network_manager(
     info!("Network hostname set to: weather");
 
     info!("Spawning network stack runner task...");
-    spawner.spawn(net_task(runner)).unwrap();
+    #[allow(clippy::unwrap_used)]
+    spawner.spawn(net_task(runner).unwrap());
 
     // Store control in static mutex for sharing
     let control_mutex = CYW43_CONTROL.init(Mutex::new(control));
@@ -159,7 +171,8 @@ pub async fn network_manager(
 
     // Spawn LED blink task
     info!("Spawning LED blink task...");
-    spawner.spawn(led_blink_task()).unwrap();
+    #[allow(clippy::unwrap_used)]
+    spawner.spawn(led_blink_task().unwrap());
 
     // Track if initial LED is still on
     let mut initial_led_on = true;
@@ -196,7 +209,7 @@ pub async fn network_manager(
                     )
                     .await
                 {
-                    warn!("WiFi join failed: {:?}, retrying...", err.status);
+                    warn!("WiFi join failed: {:?}, retrying...", err);
                     join_retry_count = join_retry_count.saturating_add(1);
                     {
                         let mut state = get_state().await;
