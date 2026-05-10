@@ -14,6 +14,8 @@ pub struct AppState {
     pub wifi_connected: bool,
     /// Last image download success
     pub last_download_success: bool,
+    /// Number of WiFi join retries in the latest update cycle
+    pub wifi_retry_count: u8,
 }
 
 impl AppState {
@@ -24,6 +26,7 @@ impl AppState {
             battery_percent: 0,
             wifi_connected: false,
             last_download_success: false,
+            wifi_retry_count: 0,
         }
     }
 }

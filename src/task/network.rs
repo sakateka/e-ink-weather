@@ -16,6 +16,7 @@ use static_cell::StaticCell;
 use crate::event::{Event, send_event};
 use crate::network::{IMAGE_BUFFER_SIZE, download_image};
 use crate::state::get_state;
+use crate::task::display::signal_display_update;
 
 /// Signal for triggering network update
 static NETWORK_UPDATE_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -170,6 +171,12 @@ pub async fn network_manager(
         NETWORK_UPDATE_SIGNAL.wait().await;
 
         info!("Network update signal received, connecting to WiFi...");
+        let mut join_retry_count: u8 = 0;
+        let mut wifi_error_displayed = false;
+        {
+            let mut state = get_state().await;
+            state.wifi_retry_count = 0;
+        }
 
         {
             // Connect to WiFi
@@ -190,6 +197,16 @@ pub async fn network_manager(
                     .await
                 {
                     warn!("WiFi join failed: {:?}, retrying...", err.status);
+                    join_retry_count = join_retry_count.saturating_add(1);
+                    {
+                        let mut state = get_state().await;
+                        state.wifi_retry_count = join_retry_count;
+                    }
+                    // Show broken WiFi warning once per update cycle after 2 retries.
+                    if join_retry_count > 2 && !wifi_error_displayed {
+                        signal_display_update();
+                        wifi_error_displayed = true;
+                    }
                     // Release control lock
                     drop(control);
                     Timer::after(Duration::from_secs(1)).await;
@@ -214,6 +231,8 @@ pub async fn network_manager(
         {
             let mut state = get_state().await;
             state.wifi_connected = true;
+            // Successful join clears broken-wifi overlay condition.
+            state.wifi_retry_count = 0;
         }
         send_event(Event::NetworkConnected).await;
 

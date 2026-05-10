@@ -442,6 +442,93 @@ pub fn draw_low_battery_warning(image: &mut [u8]) {
     );
 }
 
+/// Draw a simple "broken WiFi" warning icon in the same area as low-battery icon.
+pub fn draw_broken_wifi_warning(image: &mut [u8]) {
+    let overlay_width = 336;
+    let overlay_height = 180;
+    let overlay_x = EPD_5IN65F_WIDTH - overlay_width - 25;
+    let overlay_y = EPD_5IN65F_HEIGHT - overlay_height - 14;
+    let background_padding = 10;
+
+    fill_rect(
+        image,
+        overlay_x.saturating_sub(background_padding),
+        overlay_y.saturating_sub(background_padding),
+        overlay_width + (background_padding * 2),
+        overlay_height + (background_padding * 2),
+        EPD_5IN65F_WHITE,
+    );
+
+    let center_x = overlay_x + overlay_width / 2;
+    // Move icon a bit higher inside the block.
+    let center_y = overlay_y + overlay_height - 42;
+
+    // Real WiFi arcs: three 90-degree ring segments with decreasing radii.
+    draw_wifi_arc(image, center_x, center_y, 108, 18);
+    draw_wifi_arc(image, center_x, center_y, 76, 16);
+    draw_wifi_arc(image, center_x, center_y, 46, 14);
+
+    // WiFi dot.
+    draw_filled_circle(image, center_x, center_y, 12, EPD_5IN65F_BLACK);
+
+    // Red slash to indicate "broken".
+    for i in 0..190u16 {
+        let x = overlay_x + 72 + i;
+        let y = overlay_y + 18 + i / 2;
+        fill_rect(image, x, y, 12, 8, EPD_5IN65F_RED);
+    }
+}
+
+fn draw_wifi_arc(
+    image: &mut [u8],
+    center_x: u16,
+    center_y: u16,
+    radius_outer: u16,
+    thickness: u16,
+) {
+    let radius_inner = radius_outer.saturating_sub(thickness);
+    let ro2 = (radius_outer as i32) * (radius_outer as i32);
+    let ri2 = (radius_inner as i32) * (radius_inner as i32);
+    let cx = center_x as i32;
+    let cy = center_y as i32;
+    let ro = radius_outer as i32;
+
+    for dy in -ro..=0 {
+        for dx in -ro..=ro {
+            let d2 = dx * dx + dy * dy;
+            // Keep only the upper 90-degree sector (between -45° and +45° around vertical).
+            if d2 <= ro2 && d2 >= ri2 && dx.abs() <= -dy {
+                plot_pixel_i32(image, cx + dx, cy + dy, EPD_5IN65F_BLACK);
+            }
+        }
+    }
+}
+
+fn plot_pixel_i32(image: &mut [u8], x: i32, y: i32, color: u8) {
+    if x < 0 || y < 0 {
+        return;
+    }
+    if x >= EPD_5IN65F_WIDTH as i32 || y >= EPD_5IN65F_HEIGHT as i32 {
+        return;
+    }
+    set_pixel(image, x as u16, y as u16, color);
+}
+
+fn draw_filled_circle(image: &mut [u8], center_x: u16, center_y: u16, radius: u16, color: u8) {
+    let cx = center_x as i32;
+    let cy = center_y as i32;
+    let r = radius as i32;
+    let r2 = r * r;
+
+    for dy in -r..=r {
+        for dx in -r..=r {
+            if dx * dx + dy * dy <= r2 {
+                plot_pixel_i32(image, cx + dx, cy + dy, color);
+            }
+        }
+    }
+}
+
 fn fill_rect(image: &mut [u8], x: u16, y: u16, width: u16, height: u16, color: u8) {
     let x_end = x.saturating_add(width).min(EPD_5IN65F_WIDTH);
     let y_end = y.saturating_add(height).min(EPD_5IN65F_HEIGHT);

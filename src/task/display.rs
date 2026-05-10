@@ -6,7 +6,8 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 
 use crate::config::EpdPins;
 use crate::epd_5in65f::{
-    EPD_5IN65F_BLACK, EPD_5IN65F_WHITE, Epd5in65f, draw_low_battery_warning, draw_number,
+    EPD_5IN65F_BLACK, EPD_5IN65F_WHITE, Epd5in65f, draw_broken_wifi_warning,
+    draw_low_battery_warning, draw_number,
 };
 use crate::network::IMAGE_BUFFER_SIZE;
 use crate::state::get_state;
@@ -36,10 +37,10 @@ pub async fn display_handler(
 
         info!("Display update signal received");
 
-        // Get battery percentage from state
-        let battery_percent = {
+        // Get display indicators from state
+        let (battery_percent, wifi_retry_count) = {
             let state = get_state().await;
-            state.battery_percent
+            (state.battery_percent, state.wifi_retry_count)
         };
 
         // Validate image size
@@ -56,6 +57,13 @@ pub async fn display_handler(
             // Replace weather icon area with large low-battery warning.
             info!("Battery low ({}%), drawing warning icon", battery_percent);
             draw_low_battery_warning(image_buffer);
+            draw_number(image_buffer, 0, 0, battery_percent, EPD_5IN65F_BLACK, 3);
+        } else if wifi_retry_count > 2 {
+            info!(
+                "Network unstable ({} retries), drawing broken WiFi icon",
+                wifi_retry_count
+            );
+            draw_broken_wifi_warning(image_buffer);
             draw_number(image_buffer, 0, 0, battery_percent, EPD_5IN65F_BLACK, 3);
         } else {
             // Draw small battery percentage in top-left corner.
