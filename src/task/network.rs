@@ -3,7 +3,9 @@
 
 use cyw43::JoinOptions;
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
+use cortex_m::{interrupt, peripheral::SCB};
 use defmt::{error, info, warn};
+use embassy_futures::select::{Either, select};
 use embassy_executor::Spawner;
 use embassy_net::{Config, StackResources};
 use embassy_rp::dma::{Channel, InterruptHandler as DmaInterruptHandler};
@@ -11,7 +13,7 @@ use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{DMA_CH0, PIN_23, PIN_24, PIN_25, PIN_29, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex, signal::Signal};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use static_cell::StaticCell;
 
 use crate::event::{Event, send_event};
@@ -33,6 +35,195 @@ static CYW43_CONTROL: StaticCell<Mutex<CriticalSectionRawMutex, cyw43::Control<'
 static mut CYW43_CONTROL_REF: Option<
     &'static Mutex<CriticalSectionRawMutex, cyw43::Control<'static>>,
 > = None;
+
+/// Upper bounds to prevent waiting forever in bad network conditions.
+const WIFI_JOIN_TOTAL_TIMEOUT_SECS: u64 = 90;
+const WIFI_JOIN_MAX_RETRIES: u8 = 8;
+const WIFI_JOIN_PROGRESS_LOG_SECS: u64 = 10;
+/// If `join()` never returns (driver stuck), we cannot cancel the future safely — reset the MCU.
+const WIFI_JOIN_STUCK_RESET_SECS: u64 = 90;
+const WIFI_LINK_TIMEOUT_SECS: u64 = 20;
+const DHCP_TIMEOUT_SECS: u64 = 20;
+const HTTP_DOWNLOAD_TIMEOUT_SECS: u64 = 45;
+
+/// Clamp dynamic server delay to safe bounds.
+const MIN_NEXT_UPDATE_DELAY_SECS: u64 = 30;
+const MAX_NEXT_UPDATE_DELAY_SECS: u64 = 12 * 60 * 60;
+const WIFI_WARNING_RETRY_COUNT: u8 = 3;
+
+fn sanitize_next_delay_secs(delay_secs: u64) -> u64 {
+    delay_secs.clamp(MIN_NEXT_UPDATE_DELAY_SECS, MAX_NEXT_UPDATE_DELAY_SECS)
+}
+
+fn resolve_next_delay_secs(server_delay: Option<u64>) -> u64 {
+    server_delay
+        .map(sanitize_next_delay_secs)
+        .unwrap_or_else(|| sanitize_next_delay_secs(crate::config::UPDATE_INTERVAL_MINUTES as u64 * 60))
+}
+
+async fn apply_next_delay(server_delay: Option<u64>) -> bool {
+    let mut state = get_state().await;
+    let old_delay = state.next_update_delay_secs;
+    let new_delay = resolve_next_delay_secs(server_delay);
+
+    if let Some(delay) = server_delay {
+        if new_delay != delay {
+            warn!(
+                "Server delay {}s is out of bounds, clamped to {}s",
+                delay, new_delay
+            );
+        }
+        info!("Next update will be in {} seconds (from server)", new_delay);
+    } else {
+        info!("Next update will be in {} seconds (default)", new_delay);
+    }
+
+    state.next_update_delay_secs = new_delay;
+    state.last_download_success = true;
+    old_delay != new_delay
+}
+
+async fn mark_download_failed(wifi_issue: bool) {
+    let mut state = get_state().await;
+    state.last_download_success = false;
+    if wifi_issue {
+        state.wifi_retry_count = WIFI_WARNING_RETRY_COUNT;
+    }
+}
+
+async fn fail_download_and_refresh(wifi_issue: bool) {
+    mark_download_failed(wifi_issue).await;
+    send_event(Event::ImageDownloadFailed).await;
+}
+
+#[derive(Clone, Copy)]
+enum NetworkCycleState {
+    JoinWifi,
+    WaitNetworkReady,
+    DownloadImage,
+    FinalizeSuccess,
+    FinalizeFailure { wifi_issue: bool },
+    Disconnect,
+}
+
+async fn connect_wifi_with_retries(
+    control_mutex: &Mutex<CriticalSectionRawMutex, cyw43::Control<'static>>,
+) -> bool {
+    info!("Joining WiFi network: {}", crate::network::WIFI_SSID);
+
+    let mut join_retry_count: u8 = 0;
+    let join_start = Instant::now();
+
+    loop {
+        if join_start.elapsed().as_secs() >= WIFI_JOIN_TOTAL_TIMEOUT_SECS {
+            warn!(
+                "WiFi join timed out after {}s total",
+                WIFI_JOIN_TOTAL_TIMEOUT_SECS
+            );
+            return false;
+        }
+
+        let mut control = control_mutex.lock().await;
+
+        control
+            .set_power_management(cyw43::PowerManagementMode::Performance)
+            .await;
+
+        let join_result = {
+            let attempt_started = Instant::now();
+            let mut join_future = core::pin::pin!(control.join(
+                crate::network::WIFI_SSID,
+                JoinOptions::new(crate::network::WIFI_PASSWORD.as_bytes()),
+            ));
+            loop {
+                match select(
+                    join_future.as_mut(),
+                    Timer::after(Duration::from_secs(WIFI_JOIN_PROGRESS_LOG_SECS)),
+                )
+                .await
+                {
+                    Either::First(result) => break result,
+                    Either::Second(_) => {
+                        let attempt_secs = attempt_started.elapsed().as_secs();
+                        let cycle_secs = join_start.elapsed().as_secs();
+                        warn!(
+                            "WiFi join still pending ({}s this attempt, {}s total connect)",
+                            attempt_secs, cycle_secs
+                        );
+                        if attempt_secs >= WIFI_JOIN_STUCK_RESET_SECS {
+                            error!(
+                                "WiFi join stuck > {}s (cannot cancel join safely); resetting MCU",
+                                WIFI_JOIN_STUCK_RESET_SECS
+                            );
+                            interrupt::disable();
+                            SCB::sys_reset();
+                        }
+                        if cycle_secs >= WIFI_JOIN_TOTAL_TIMEOUT_SECS {
+                            error!(
+                                "WiFi connect exceeded {}s total; resetting MCU",
+                                WIFI_JOIN_TOTAL_TIMEOUT_SECS
+                            );
+                            interrupt::disable();
+                            SCB::sys_reset();
+                        }
+                    }
+                }
+            }
+        };
+
+        match join_result {
+            Ok(_) => return true,
+            Err(err) => {
+                warn!("WiFi join failed with error: {:?}, retrying...", err);
+            }
+        }
+
+        join_retry_count = join_retry_count.saturating_add(1);
+        {
+            let mut state = get_state().await;
+            state.wifi_retry_count = join_retry_count;
+        }
+
+        if join_retry_count >= WIFI_JOIN_MAX_RETRIES {
+            warn!("WiFi join reached retry limit: {}", WIFI_JOIN_MAX_RETRIES);
+            return false;
+        }
+
+        drop(control);
+        Timer::after(Duration::from_secs(1)).await;
+    }
+}
+
+async fn wait_network_ready(stack: &embassy_net::Stack<'_>) -> bool {
+    info!("WiFi connected, waiting for link...");
+    if with_timeout(
+        Duration::from_secs(WIFI_LINK_TIMEOUT_SECS),
+        stack.wait_link_up(),
+    )
+    .await
+    .is_err()
+    {
+        warn!(
+            "Timeout waiting for link up ({}s)",
+            WIFI_LINK_TIMEOUT_SECS
+        );
+        return false;
+    }
+
+    info!("Waiting for DHCP...");
+    if with_timeout(
+        Duration::from_secs(DHCP_TIMEOUT_SECS),
+        stack.wait_config_up(),
+    )
+    .await
+    .is_err()
+    {
+        warn!("Timeout waiting for DHCP config ({}s)", DHCP_TIMEOUT_SECS);
+        return false;
+    }
+
+    true
+}
 
 /// Signals the network task to start update
 pub fn signal_network_update() {
@@ -183,119 +374,88 @@ pub async fn network_manager(
         // Wait for network update signal
         NETWORK_UPDATE_SIGNAL.wait().await;
 
-        info!("Network update signal received, connecting to WiFi...");
-        let mut join_retry_count: u8 = 0;
-        let mut wifi_error_displayed = false;
+        info!("Network update signal received");
         {
             let mut state = get_state().await;
             state.wifi_retry_count = 0;
         }
 
-        {
-            // Connect to WiFi
-            info!("Joining WiFi network: {}", crate::network::WIFI_SSID);
-            loop {
-                let mut control = control_mutex.lock().await;
-
-                // Set performance mode for connection
-                control
-                    .set_power_management(cyw43::PowerManagementMode::Performance)
-                    .await;
-
-                if let Err(err) = control
-                    .join(
-                        crate::network::WIFI_SSID,
-                        JoinOptions::new(crate::network::WIFI_PASSWORD.as_bytes()),
+        let mut cycle_state = NetworkCycleState::JoinWifi;
+        let mut delay_changed = false;
+        while !matches!(cycle_state, NetworkCycleState::Disconnect) {
+            cycle_state = match cycle_state {
+                NetworkCycleState::JoinWifi => {
+                    if connect_wifi_with_retries(control_mutex).await {
+                        NetworkCycleState::WaitNetworkReady
+                    } else {
+                        NetworkCycleState::FinalizeFailure { wifi_issue: true }
+                    }
+                }
+                NetworkCycleState::WaitNetworkReady => {
+                    if wait_network_ready(&stack).await {
+                        info!("Network stack is up!");
+                        if let Some(config) = stack.config_v4() {
+                            info!("IP address: {}", config.address);
+                        }
+                        {
+                            let mut state = get_state().await;
+                            state.wifi_connected = true;
+                            state.wifi_retry_count = 0;
+                        }
+                        send_event(Event::NetworkConnected).await;
+                        NetworkCycleState::DownloadImage
+                    } else {
+                        NetworkCycleState::FinalizeFailure { wifi_issue: true }
+                    }
+                }
+                NetworkCycleState::DownloadImage => {
+                    info!("Downloading image...");
+                    match with_timeout(
+                        Duration::from_secs(HTTP_DOWNLOAD_TIMEOUT_SECS),
+                        download_image(&stack, image_buffer),
                     )
                     .await
-                {
-                    warn!("WiFi join failed: {:?}, retrying...", err);
-                    join_retry_count = join_retry_count.saturating_add(1);
+                    {
+                        Ok(Ok((image_data, server_delay))) => {
+                            info!("Image downloaded: {} bytes", image_data.len());
+                            delay_changed = apply_next_delay(server_delay).await;
+                            NetworkCycleState::FinalizeSuccess
+                        }
+                        Ok(Err(e)) => {
+                            error!("Download failed: {}", e);
+                            NetworkCycleState::FinalizeFailure { wifi_issue: true }
+                        }
+                        Err(_) => {
+                            error!(
+                                "Image download timed out after {} seconds",
+                                HTTP_DOWNLOAD_TIMEOUT_SECS
+                            );
+                            NetworkCycleState::FinalizeFailure { wifi_issue: true }
+                        }
+                    }
+                }
+                NetworkCycleState::FinalizeSuccess => {
+                    send_event(Event::ImageDownloaded).await;
+                    if delay_changed {
+                        info!("Update delay changed, notifying scheduler");
+                        send_event(Event::SchedulerUpdateRequested).await;
+                    }
+                    NetworkCycleState::Disconnect
+                }
+                NetworkCycleState::FinalizeFailure { wifi_issue } => {
                     {
                         let mut state = get_state().await;
-                        state.wifi_retry_count = join_retry_count;
+                        state.wifi_connected = false;
                     }
-                    // Show broken WiFi warning once per update cycle after 2 retries.
-                    if join_retry_count > 2 && !wifi_error_displayed {
+                    fail_download_and_refresh(wifi_issue).await;
+                    if wifi_issue {
+                        // Trigger a single final render for this cycle.
                         signal_display_update();
-                        wifi_error_displayed = true;
                     }
-                    // Release control lock
-                    drop(control);
-                    Timer::after(Duration::from_secs(1)).await;
-                } else {
-                    break;
+                    NetworkCycleState::Disconnect
                 }
-            }
-        }
-
-        info!("WiFi connected, waiting for link...");
-        stack.wait_link_up().await;
-
-        info!("Waiting for DHCP...");
-        stack.wait_config_up().await;
-
-        info!("Network stack is up!");
-        if let Some(config) = stack.config_v4() {
-            info!("IP address: {}", config.address);
-        }
-
-        // Update state
-        {
-            let mut state = get_state().await;
-            state.wifi_connected = true;
-            // Successful join clears broken-wifi overlay condition.
-            state.wifi_retry_count = 0;
-        }
-        send_event(Event::NetworkConnected).await;
-
-        // Download image
-        info!("Downloading image...");
-        match download_image(&stack, image_buffer).await {
-            Ok((image_data, server_delay)) => {
-                info!("Image downloaded: {} bytes", image_data.len());
-
-                // Update state with server delay if provided
-                let delay_changed = {
-                    let mut state = get_state().await;
-                    let old_delay = state.next_update_delay_secs;
-
-                    if let Some(delay) = server_delay {
-                        state.next_update_delay_secs = delay;
-                        info!("Next update will be in {} seconds (from server)", delay);
-                    } else {
-                        state.next_update_delay_secs =
-                            crate::config::UPDATE_INTERVAL_MINUTES as u64 * 60;
-                        info!(
-                            "Next update will be in {} seconds (default)",
-                            state.next_update_delay_secs
-                        );
-                    }
-                    state.last_download_success = true;
-
-                    // Check if delay changed
-                    old_delay != state.next_update_delay_secs
-                };
-
-                send_event(Event::ImageDownloaded).await;
-
-                // Notify scheduler if delay changed
-                if delay_changed {
-                    info!("Update delay changed, notifying scheduler");
-                    send_event(Event::SchedulerUpdateRequested).await;
-                }
-            }
-            Err(e) => {
-                error!("Download failed: {}", e);
-
-                // Update state
-                {
-                    let mut state = get_state().await;
-                    state.last_download_success = false;
-                }
-
-                send_event(Event::ImageDownloadFailed).await;
-            }
+                NetworkCycleState::Disconnect => NetworkCycleState::Disconnect,
+            };
         }
 
         {

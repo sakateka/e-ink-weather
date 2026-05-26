@@ -4,13 +4,15 @@
 #![no_std]
 #![no_main]
 
+use core::panic::PanicInfo;
+use cortex_m::peripheral::SCB;
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_rp::adc::{Adc, Config as AdcConfig, InterruptHandler as AdcInterruptHandler};
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::{ClockConfig, CoreVoltage};
 use embassy_rp::config::Config;
-use {defmt_rtt as _, panic_probe as _};
+use defmt_rtt as _;
 
 mod config;
 mod epd_5in65f;
@@ -34,6 +36,12 @@ static mut IMAGE_BUFFER: [u8; IMAGE_BUFFER_SIZE] = [0u8; IMAGE_BUFFER_SIZE];
 bind_interrupts!(struct Irqs {
     ADC_IRQ_FIFO => AdcInterruptHandler;
 });
+
+#[panic_handler]
+fn panic(_info: &PanicInfo<'_>) -> ! {
+    cortex_m::interrupt::disable();
+    SCB::sys_reset();
+}
 
 /// Helper function to spawn tasks and unwrap, panicking if spawn fails.
 /// This is acceptable during initialization as we want to fail fast if we can't spawn a task.
